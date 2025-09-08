@@ -1,8 +1,34 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 import requests
 from random import randint
+import time
+import json
+
+from starlette.responses import JSONResponse
+
 app = FastAPI()
+
+@app.middleware("http")
+async def middleware(request: Request, call_next):
+    start_time = time.time()
+    log_data = {
+        "ip": request.client.host,
+        "method": request.method,
+        "url" :  str(request.url),
+    }
+
+    response = await call_next(request)
+
+    log_data["status_code"] = response.status_code
+    log_data["duration"] = round(time.time() - start_time, 4)
+
+    with open("requests_log.json", "a") as f:
+        f.write(json.dumps(log_data) + "\n")
+
+    return response
+
 
 @app.get("/my-ip")
 async def get_ip(request: Request):
@@ -18,25 +44,22 @@ class Location(BaseModel):
     location : str
 @app.post("/weather")
 def get_weather(data: Location):
-    try:
-        city = data.location
-        url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_KEY}&units=metric"
 
-        res = requests.get(url)
+    city = data.location
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_KEY}&units=metric"
 
-        if res.status_code != 200:
-            print(0)
-            return {"error": f"OpenWeather error: {res.status_code}", "details": res.text}
+    res = requests.get(url)
 
-        res = res.json()
+    if res.status_code != 200:
+        return {"error": f"OpenWeather error: {res.status_code}", "details": res.text}
 
-        return {
-            "temperature": res["main"]["temp"],
-            "humidity": res["main"]["humidity"],
-        }
-    except:
-        print(1)
-        return {"error": "Invalid location"}
+    res = res.json()
+
+    return {
+        "location": city,
+        "temperature": res["main"]["temp"],
+        "humidity": res["main"]["humidity"],
+    }
 
 ####################################
 
@@ -63,8 +86,25 @@ quotes = [
     "Act as if what you do makes a difference. It does."
 ]
 
-
 @app.get("/quote")
 def get_quote():
     index = randint(0, len(quotes) - 1)
     return {"quote": quotes[index]}
+
+@app.add_exception_handler(Exception)
+async def handle_exception(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+    elif isinstance(exc, RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors()},
+        )
+    else:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal Server Error"},
+        )
